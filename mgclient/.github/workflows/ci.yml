@@ -1,0 +1,181 @@
+name: CI
+
+on: [push]
+
+jobs:
+  clang_check:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Set-up repository
+      uses: actions/checkout@v2
+    - name: Install environment
+      run: |
+        sudo apt install -y clang-format
+    - name: Run clang formatter
+      run: |
+        ./tool/format.sh
+
+  build_and_test_apple:
+    strategy:
+      matrix:
+        platform: [macos-11]
+    runs-on: ${{ matrix.platform }}
+    env:
+      MG_VERSION: "1.4.0"
+    steps:
+      - name: Set-up repository
+        uses: actions/checkout@v2
+      # NOTE: CI can't execute end2end tests because there is no way to run
+      #       Memgraph on CI MacOS machines.
+      - name: Build and test mgclient
+        run: |
+          mkdir build
+          cd build
+          cmake -DOPENSSL_ROOT_DIR="$(ls -rd -- /usr/local/Cellar/openssl@1.1/* | head -n 1)" -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TESTING=ON -DBUILD_TESTING_INTEGRATION=ON -DC_WARNINGS_AS_ERRORS=ON -DCPP_WARNINGS_AS_ERRORS=ON ..
+          cmake --build . --parallel
+          ctest -E "example|integration"
+          sudo make install
+
+  build_windows_compiler:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2019
+    env:
+      VCPKG_ROOT: "${{ github.workspace }}\\vcpkg"
+      deps: "openssl:x64-windows"
+    steps:
+      - name: Set-up repository
+        uses: actions/checkout@v2
+      - name: Restore vcpkg and its artifacts
+        uses: actions/cache@v3
+        id: vcpkg-cache
+        with:
+          path: ${{ env.VCPKG_ROOT }}
+          key: ${{ matrix.os }}-${{ env.deps }}
+      - name: Get vcpkg
+        if: ${{ steps.vcpkg-cache.outputs.cache-hit != 'true' }}
+        run: |
+          cd ${{ github.workspace }}
+          git clone https://github.com/Microsoft/vcpkg.git
+          cd vcpkg
+          .\bootstrap-vcpkg.bat
+      - name: Remove system vcpkg
+        run: rm -rf "$VCPKG_INSTALLATION_ROOT"
+        shell: bash
+      - name: Install vcpkg packages
+        run: |
+          ${{ env.VCPKG_ROOT }}\vcpkg.exe install ${{ env.deps }}
+      - name: Build and test mgclient
+        run: |
+          mkdir build
+          cd build
+          cmake -DOPENSSL_ROOT_DIR="${{ env.VCPKG_ROOT }}\installed\x64-windows" ..
+          cmake --build .
+
+  build_and_test_linux:
+    strategy:
+     matrix:
+        platform: [ubuntu-20.04, ubuntu-22.04]
+        mgversion: ["2.0.0", "2.3.0"]
+        packages: ["gcc g++ clang"]
+        gcc-postfix: [""]
+        clang-postfix: [""]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Set-up repository
+        uses: actions/checkout@v1
+      - name: Install environment
+        run: |
+          sudo apt install -y ${{ matrix.packages }}
+      - name: Cache Memgraph Docker image
+        id: cache-memgraph-docker
+        uses: actions/cache@v1
+        with:
+          path: ~/memgraph
+          key: cache-memgraph-v${{ matrix.mgversion }}-docker-image
+      - name: Download Memgraph Docker image
+        if: steps.cache-memgraph-docker.outputs.cache-hit != 'true'
+        run: |
+          mkdir ~/memgraph
+          curl -L https://memgraph.com/download/memgraph/v${{ matrix.mgversion }}/docker/memgraph-${{ matrix.mgversion }}-docker.tar.gz > ~/memgraph/memgraph-docker.tar.gz
+      - name: Load and run Memgraph Docker image
+        run: |
+          docker load -i ~/memgraph/memgraph-docker.tar.gz
+          docker run -d -p 7687:7687 memgraph --telemetry-enabled=false
+      - name: Build with gcc, test and install mgclient
+        run: |
+          mkdir build-gcc && cd build-gcc
+          cmake -DCMAKE_C_COMPILER=gcc${{ matrix.gcc-postfix }} -DCMAKE_CXX_COMPILER=g++${{ matrix.gcc-postfix }} -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_TESTING_INTEGRATION=ON -DC_WARNINGS_AS_ERRORS=ON -DCPP_WARNINGS_AS_ERRORS=ON ..
+          cmake --build . --parallel
+          ctest --output-on-failure
+          sudo make install
+      - name: Build with clang, test and install mgclient
+        run: |
+          mkdir build-clang && cd build-clang
+          cmake -DCMAKE_C_COMPILER=clang${{ matrix.clang-postfix }} -DCMAKE_CXX_COMPILER=clang++${{ matrix.clang-postfix }} -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_TESTING_INTEGRATION=ON -DC_WARNINGS_AS_ERRORS=ON -DCPP_WARNINGS_AS_ERRORS=ON ..
+          cmake --build . --parallel
+          ctest --output-on-failure
+          sudo make install
+
+  # GitHub actions can't run Linux Docker container on Windows machine
+  # https://github.com/actions/virtual-environments/issues/1143.
+  #
+  # The only option to test this project on GitHub Actions under Windows is to
+  # run Memgraph under [WSL](https://docs.microsoft.com/en-us/windows/wsl/).
+  # Memgraph has to be started manually because systemd is not available on
+  # WSL (init process does not exist).
+  build_and_test_windows_mingw:
+    runs-on: windows-2019
+    strategy:
+      matrix:
+        include: [
+          { msystem: MINGW64, arch: x86_64, mgversion: "1.4.0" }
+        ]
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Set-up repository
+        uses: actions/checkout@v2
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: git base-devel mingw-w64-${{ matrix.arch }}-toolchain mingw-w64-${{ matrix.arch }}-cmake mingw-w64-${{ matrix.arch }}-openssl
+      - uses: Vampire/setup-wsl@v1
+        with:
+            distribution: Ubuntu-18.04
+      - name: Download, install and run Memgraph under WSL
+        shell: wsl-bash {0} # root shell
+        run: |
+          mkdir ~/memgraph
+          curl -L https://download.memgraph.com/memgraph/v${{matrix.mgversion}}/ubuntu-18.04/memgraph_${{matrix.mgversion}}-community-1_amd64.deb --output ~/memgraph/memgraph-community.deb
+          dpkg -i ~/memgraph/memgraph-community.deb
+          nohup /usr/lib/memgraph/memgraph --bolt-port 7687 --bolt-cert-file="" --bolt-key-file="" --data-directory="~/memgraph/data" --storage-properties-on-edges=true --storage-snapshot-interval-sec=0 --storage-wal-enabled=false --storage-recover-on-startup=false --storage-snapshot-on-exit=false --telemetry-enabled=false --log-file='' &
+          sleep 1 # Wait for Memgraph a bit.
+      - name: Build and test mgclient
+        run: |
+          mkdir build
+          cd build
+          cmake .. -G "MinGW Makefiles" -DBUILD_TESTING=ON -DBUILD_TESTING_INTEGRATION=ON -DC_WARNINGS_AS_ERRORS=ON -DCPP_WARNINGS_AS_ERRORS=ON
+          cmake --build . --parallel
+          ctest --verbose -R "allocator|value|example_basic|integration_basic"
+
+  build_and_test_linux_wasm:
+    strategy:
+     matrix:
+        platform: [ubuntu-20.04]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Set-up repository
+        uses: actions/checkout@v2
+
+      - name: Build with clang
+        run: |
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DC_WARNINGS_AS_ERRORS=ON -DWASM=ON
+          make

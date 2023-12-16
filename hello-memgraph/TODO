@@ -1,0 +1,15 @@
+Todo:
+  ☐ @critical notes with ChatGPT force implementors to implement more than one trait
+  ☐ search create trait fields, with its forced tratis implementation
+  ☐ pass node to all, not properties
+  ☐ crud 
+    ☐ Developer::findId/find
+    ☐ Developer::deleteId/delete
+    ☐ Developer::updateId/update (like patch) (use destructuring)
+  ☐ create a lib project like data layer
+  ☐ add
+    if let Err(e) = connection.commit() {
+      println!("Error: {}", e);
+    }
+  ☐ add ssl to connection
+  ☐ auth to connection
