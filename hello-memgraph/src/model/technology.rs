@@ -1,7 +1,7 @@
-use rsmgclient::{Value, QueryParam};
+use rsmgclient::{Value, QueryParam, Node};
 use std::{collections::HashMap, error::Error, any::type_name, fmt::Display};
 
-use super::NodeTrait;
+use super::{NodeTrait, FieldTrait};
 
 #[derive(Debug)]
 pub struct Technology {
@@ -15,6 +15,8 @@ pub enum Fields {
   Name,
   Description,
 }
+
+impl FieldTrait for Fields {}
 
 impl Display for Fields {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,6 +47,25 @@ impl Into<String> for Fields {
           Fields::Description => "description".to_string(),
       }
   }
+}
+
+impl From<Node> for Technology {
+    fn from(node: Node) -> Self {
+        let properties = node.properties;
+        let id = match properties.get::<String>(&Fields::Id.into()) {
+            Some(Value::Int(object)) => *object,
+            _ => 0,
+        };
+        let name = match properties.get::<String>(&Fields::Name.into()) {
+            Some(Value::String(object)) => object.to_string(),
+            _ => String::from(""),
+        };
+        let description = match properties.get::<String>(&Fields::Description.into()) {
+            Some(Value::String(object)) => object.to_string(),
+            _ => String::from(""),
+        };
+        Self { id, name, description }
+    }
 }
 
 impl NodeTrait<Self> for Technology {
